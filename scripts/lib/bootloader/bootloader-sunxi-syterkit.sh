@@ -29,5 +29,5 @@ echo "${BOARD}" > ${workspace}/bootloader-${BOARD}/.done
 }
 
 apply_bootloader(){
-echo ""
+    dd if= of=$1 seek=8k conv=notrunc status=none
 }

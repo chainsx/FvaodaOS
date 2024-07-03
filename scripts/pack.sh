@@ -84,17 +84,69 @@ UMOUNT_ALL(){
     set -e
 }
 
-compile_genimage()
-{
-    if [ -f ${workspace}/genimage ];then
-        echo "found genimage"
-    else
-        cd ${workspace}/../tools/genimage
-        autoreconf -is
-        ./configure
-        make
-        cp genimage ${workspace}
+LOSETUP_D_IMG(){
+    set +e
+    if [ -d ${root_mnt} ]; then
+        if grep -q "${root_mnt} " /proc/mounts ; then
+            umount ${root_mnt}
+        fi
     fi
+    if [ -d ${boot_mnt} ]; then
+        if grep -q "${boot_mnt} " /proc/mounts ; then
+            umount ${boot_mnt}
+        fi
+    fi
+    if [ -d ${emmc_boot_mnt} ]; then
+        if grep -q "${emmc_boot_mnt} " /proc/mounts ; then
+            umount ${emmc_boot_mnt}
+        fi
+    fi
+    if [ -d ${rootfs_dir} ]; then
+        if grep -q "${rootfs_dir} " /proc/mounts ; then
+            umount ${rootfs_dir}
+        fi
+    fi
+    if [ -d ${boot_dir} ]; then
+        if grep -q "${boot_dir} " /proc/mounts ; then
+            umount ${boot_dir}
+        fi
+    fi
+    if [ "x$device" != "x" ]; then
+        kpartx -d ${device}
+        losetup -d ${device}
+        device=""
+    fi
+    if [ -d ${root_mnt} ]; then
+        rm -rf ${root_mnt}
+    fi
+    if [ -d ${boot_mnt} ]; then
+        rm -rf ${boot_mnt}
+    fi
+    if [ -d ${emmc_boot_mnt} ]; then
+        rm -rf ${emmc_boot_mnt}
+    fi
+    if [ -d ${rootfs_dir} ]; then
+        rm -rf ${rootfs_dir}
+    fi
+    if [ -d ${boot_dir} ]; then
+        rm -rf ${boot_dir}
+    fi
+    set -e
+}
+
+gen_preimage()
+{
+    device=""
+    LOSETUP_D_IMG
+    size=`du -sh --block-size=1MiB ${workspace}/rootfs.img | cut -f 1 | xargs`
+    size=$(($size+1100))
+    losetup -D
+    
+    dd if=/dev/zero of=${img_file} bs=1MiB count=$size status=progress && sync
+
+    parted ${img_file} mklabel ${IMG_PARTITION} mkpart primary fat32 32768s 524287s
+    parted ${img_file} -s set 1 boot on
+    parted ${img_file} mkpart primary ext4 524288s 100%
 }
 
 pack_boot()
@@ -155,7 +207,21 @@ pack_sdcard()
 {
     cd ${workspace}
     if [ -f ${workspace}/sdcard.img ];then rm -rf ${workspace}/sdcard.img; fi
-    bash ${workspace}/../tools/genimage.sh -c ${workspace}/../tools/genimage-sdcard.cfg
+    
+    device=`losetup -f --show -P ${img_file}`
+    trap 'LOSETUP_D_IMG' EXIT
+    kpartx -va ${device}
+    loopX=${device##*\/}
+    partprobe ${device}
+
+    bootp=/dev/mapper/${loopX}p1
+    rootp=/dev/mapper/${loopX}p2
+    
+    mkfs.vfat -n boot ${bootp}
+    mkfs.ext4 -L rootfs ${rootp}
+    mkdir -p ${root_mnt} ${boot_mnt}
+    mount -t vfat -o uid=root,gid=root,umask=0000 ${bootp} ${boot_mnt}
+    mount -t ext4 ${rootp} ${root_mnt}
 }
 
 xz_image()
@@ -179,7 +245,9 @@ parseargs "$@" || help $?
 source ../boards/${BOARD}.conf
 source ../scripts/lib/bootloader/bootloader-${BL_CONFIG}.sh
 
-compile_genimage
+img_file=${workspace}/sdcard.img
+
+gen_preimage
 pack_boot
 pack_rootfs
 pack_sdcard
